@@ -189,3 +189,53 @@ def create_empty_blob(filename):
     fo.write("File created by experimental.gracefulblobmissing.")
     fo.close()
     logger.info("Created missing blob-file %s" % filename)
+
+
+
+def patched_loadBlob_relstorage(self, cursor, oid, serial):
+    """Return the filename where the blob file can be found.
+    """
+    # Load a blob.  If it isn't present and we have a shared blob
+    # directory, then assume that it doesn't exist on the server
+    # and return None.
+
+    blob_filename = self.fshelper.getBlobFilename(oid, serial)
+    if not os.path.exists(blob_filename):
+       create_empty_blob(blob_filename)
+    if self.shared_blob_dir:
+        if os.path.exists(blob_filename):
+            return blob_filename
+        else:
+            # All the blobs are in a shared directory.  If the
+            # file isn't here, it's not anywhere.
+            raise POSException.POSKeyError("No blob file", oid, serial)
+
+    if os.path.exists(blob_filename):
+        return _accessed(blob_filename)
+
+    # First, we'll create the directory for this oid, if it doesn't exist.
+    self.fshelper.getPathForOID(oid, create=True)
+
+    # OK, it's not here and we (or someone) needs to get it.  We
+    # want to avoid getting it multiple times.  We want to avoid
+    # getting it multiple times even accross separate client
+    # processes on the same machine. We'll use file locking.
+
+    lock = _lock_blob(blob_filename)
+    try:
+        # We got the lock, so it's our job to download it.  First,
+        # we'll double check that someone didn't download it while we
+        # were getting the lock:
+
+        if os.path.exists(blob_filename):
+            return _accessed(blob_filename)
+
+        self.download_blob(cursor, oid, serial, blob_filename)
+
+        if os.path.exists(blob_filename):
+            return _accessed(blob_filename)
+
+        raise POSException.POSKeyError("No blob file", oid, serial)
+
+    finally:
+        lock.close()
